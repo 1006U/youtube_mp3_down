@@ -35,7 +35,7 @@ import kotlin.coroutines.resume
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val DOWNLOAD_FOLDER_NAME = "유튜브 음원추출"
+        private const val MUSIC_FOLDER_NAME = "유튜브 음원추출"
         private const val AUDIO_MIME_TYPE = "audio/mpeg"
     }
 
@@ -70,15 +70,15 @@ class MainActivity : AppCompatActivity() {
                 return@setOnClickListener
             }
 
-            val publicDownloadDir =
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val appDownloadDir = File(publicDownloadDir, DOWNLOAD_FOLDER_NAME)
+            val publicMusicDir =
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+            val appMusicDir = File(publicMusicDir, MUSIC_FOLDER_NAME)
 
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-                !appDownloadDir.exists() &&
-                !appDownloadDir.mkdirs()
+                !appMusicDir.exists() &&
+                !appMusicDir.mkdirs()
             ) {
-                Toast.makeText(this, "다운로드 폴더를 만들 수 없습니다.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "음악 폴더를 만들 수 없습니다.", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
 
@@ -130,7 +130,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     } else {
                         val publishedFiles = extractedMp3Files.map { sourceFile ->
-                            publishLegacyAudio(sourceFile, appDownloadDir)
+                            publishLegacyAudio(sourceFile, appMusicDir)
                         }
                         scanAudioFiles(publishedFiles)
                     }
@@ -140,11 +140,11 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = buildString {
                             append("다운로드 완료!\n")
                             append("삼성 음악 라이브러리 등록 완료\n")
-                            append("저장 경로: Download/$DOWNLOAD_FOLDER_NAME")
+                            append("저장 경로: Music/$MUSIC_FOLDER_NAME")
                         }
                         btnDownload.isEnabled = true
                         btnOpenFolder.visibility = View.VISIBLE
-                        configureOpenFolderButton(btnOpenFolder, appDownloadDir)
+                        configureOpenFolderButton(btnOpenFolder, appMusicDir)
                     }
                 } catch (e: Exception) {
                     Log.e("MainActivity", "MP3 download failed", e)
@@ -160,14 +160,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Android 10+에서는 MP3를 단순히 Download 폴더에 파일로 쓰지 않고
-     * MediaStore.Audio 컬렉션에 직접 게시한다.
+     * Android 10+에서는 MP3를 MediaStore.Audio 컬렉션에 직접 게시한다.
+     * 실제 파일 위치는 Music/유튜브 음원추출/파일명.mp3 이다.
      *
-     * 실제 파일 위치는 기존과 동일하게
-     * Download/유튜브 음원추출/파일명.mp3 이다.
-     *
-     * IS_MUSIC=1로 등록하기 때문에 Samsung Music 같은 음악 앱이
-     * 재부팅/전체 미디어 재검색 없이 바로 음악 항목으로 인식할 수 있다.
+     * IS_MUSIC=1로 등록하고 Music 컬렉션 경로에 저장해서
+     * Samsung Music 같은 음악 앱이 재부팅 없이 즉시 인식하기 쉽게 한다.
      */
     private fun publishToMediaStore(sourceFile: File): Uri {
         check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
@@ -183,7 +180,7 @@ class MainActivity : AppCompatActivity() {
             put(MediaStore.Audio.Media.MIME_TYPE, AUDIO_MIME_TYPE)
             put(
                 MediaStore.Audio.Media.RELATIVE_PATH,
-                "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOAD_FOLDER_NAME"
+                "${Environment.DIRECTORY_MUSIC}/$MUSIC_FOLDER_NAME"
             )
             put(MediaStore.Audio.Media.IS_MUSIC, 1)
             put(MediaStore.Audio.Media.IS_PENDING, 1)
@@ -205,6 +202,7 @@ class MainActivity : AppCompatActivity() {
             }
             resolver.update(audioUri, completedValues, null, null)
             resolver.notifyChange(audioUri, null)
+            resolver.notifyChange(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, null)
 
             Log.d("MediaStore", "Published audio: ${sourceFile.name} -> $audioUri")
             return audioUri
@@ -216,7 +214,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun publishLegacyAudio(sourceFile: File, directory: File): File {
         if (!directory.exists() && !directory.mkdirs()) {
-            throw IllegalStateException("다운로드 폴더를 만들 수 없습니다.")
+            throw IllegalStateException("음악 폴더를 만들 수 없습니다.")
         }
 
         val destination = File(directory, sourceFile.name)
