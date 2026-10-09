@@ -1,12 +1,15 @@
 package com.example.youtubeaudioextractor
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import android.view.View
 import android.widget.Button
@@ -30,6 +33,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
 class MainActivity : AppCompatActivity() {
+
+    companion object {
+        private const val DOWNLOAD_FOLDER_NAME = "유튜브 음원추출"
+        private const val AUDIO_MIME_TYPE = "audio/mpeg"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,9 +72,12 @@ class MainActivity : AppCompatActivity() {
 
             val publicDownloadDir =
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            val appDownloadDir = File(publicDownloadDir, "유튜브 음원추출")
+            val appDownloadDir = File(publicDownloadDir, DOWNLOAD_FOLDER_NAME)
 
-            if (!appDownloadDir.exists() && !appDownloadDir.mkdirs()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+                !appDownloadDir.exists() &&
+                !appDownloadDir.mkdirs()
+            ) {
                 Toast.makeText(this, "다운로드 폴더를 만들 수 없습니다.", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
@@ -77,14 +88,21 @@ class MainActivity : AppCompatActivity() {
             tvStatus.text = "추출 준비 중..."
 
             CoroutineScope(Dispatchers.IO).launch {
+                val workingDir = File(
+                    cacheDir,
+                    "youtube-audio/${System.currentTimeMillis()}"
+                )
+
                 try {
-                    val beforeDownload = snapshotMp3Files(appDownloadDir)
+                    if (!workingDir.mkdirs()) {
+                        throw IllegalStateException("임시 작업 폴더를 만들 수 없습니다.")
+                    }
 
                     val request = YoutubeDLRequest(url).apply {
                         addOption("-f", "bestaudio")
                         addOption("--extract-audio")
                         addOption("--audio-format", "mp3")
-                        addOption("-o", "${appDownloadDir.absolutePath}/%(title)s.%(ext)s")
+                        addOption("-o", "${workingDir.absolutePath}/%(title)s.%(ext)s")
                     }
 
                     YoutubeDL.getInstance().execute(request) { progress, _, _ ->
@@ -94,26 +112,35 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    val changedMp3Files = findChangedMp3Files(appDownloadDir, beforeDownload)
+                    val extractedMp3Files = workingDir.listFiles()
+                        ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
+                        .orEmpty()
 
-                    withContext(Dispatchers.Main) {
-                        tvStatus.text = if (changedMp3Files.isEmpty()) {
-                            "다운로드 완료! 미디어 라이브러리에서 파일을 확인 중..."
-                        } else {
-                            "다운로드 완료! 삼성 음악 목록을 갱신 중..."
-                        }
+                    if (extractedMp3Files.isEmpty()) {
+                        throw IllegalStateException("추출된 MP3 파일을 찾을 수 없습니다.")
                     }
 
-                    scanAudioFiles(changedMp3Files)
+                    withContext(Dispatchers.Main) {
+                        tvStatus.text = "다운로드 완료! 삼성 음악에 등록 중..."
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        extractedMp3Files.forEach { sourceFile ->
+                            publishToMediaStore(sourceFile)
+                        }
+                    } else {
+                        val publishedFiles = extractedMp3Files.map { sourceFile ->
+                            publishLegacyAudio(sourceFile, appDownloadDir)
+                        }
+                        scanAudioFiles(publishedFiles)
+                    }
 
                     withContext(Dispatchers.Main) {
                         progressBar.progress = 100
                         tvStatus.text = buildString {
                             append("다운로드 완료!\n")
-                            if (changedMp3Files.isNotEmpty()) {
-                                append("삼성 음악 라이브러리 갱신 완료\n")
-                            }
-                            append("저장 경로: ${appDownloadDir.absolutePath}")
+                            append("삼성 음악 라이브러리 등록 완료\n")
+                            append("저장 경로: Download/$DOWNLOAD_FOLDER_NAME")
                         }
                         btnDownload.isEnabled = true
                         btnOpenFolder.visibility = View.VISIBLE
@@ -125,28 +152,77 @@ class MainActivity : AppCompatActivity() {
                         tvStatus.text = "오류 발생: ${e.message}"
                         btnDownload.isEnabled = true
                     }
+                } finally {
+                    workingDir.deleteRecursively()
                 }
             }
         }
     }
 
-    private fun snapshotMp3Files(directory: File): Map<String, Long> =
-        directory.listFiles()
-            ?.filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
-            ?.associate { it.absolutePath to it.lastModified() }
-            .orEmpty()
+    /**
+     * Android 10+에서는 MP3를 단순히 Download 폴더에 파일로 쓰지 않고
+     * MediaStore.Audio 컬렉션에 직접 게시한다.
+     *
+     * 실제 파일 위치는 기존과 동일하게
+     * Download/유튜브 음원추출/파일명.mp3 이다.
+     *
+     * IS_MUSIC=1로 등록하기 때문에 Samsung Music 같은 음악 앱이
+     * 재부팅/전체 미디어 재검색 없이 바로 음악 항목으로 인식할 수 있다.
+     */
+    private fun publishToMediaStore(sourceFile: File): Uri {
+        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
 
-    private fun findChangedMp3Files(
-        directory: File,
-        beforeDownload: Map<String, Long>
-    ): List<File> =
-        directory.listFiles()
-            ?.filter { file ->
-                file.isFile &&
-                    file.extension.equals("mp3", ignoreCase = true) &&
-                    beforeDownload[file.absolutePath] != file.lastModified()
+        val resolver = applicationContext.contentResolver
+        val audioCollection = MediaStore.Audio.Media.getContentUri(
+            MediaStore.VOLUME_EXTERNAL_PRIMARY
+        )
+
+        val values = ContentValues().apply {
+            put(MediaStore.Audio.Media.DISPLAY_NAME, sourceFile.name)
+            put(MediaStore.Audio.Media.TITLE, sourceFile.nameWithoutExtension)
+            put(MediaStore.Audio.Media.MIME_TYPE, AUDIO_MIME_TYPE)
+            put(
+                MediaStore.Audio.Media.RELATIVE_PATH,
+                "${Environment.DIRECTORY_DOWNLOADS}/$DOWNLOAD_FOLDER_NAME"
+            )
+            put(MediaStore.Audio.Media.IS_MUSIC, 1)
+            put(MediaStore.Audio.Media.IS_PENDING, 1)
+        }
+
+        val audioUri = resolver.insert(audioCollection, values)
+            ?: throw IllegalStateException("MediaStore에 MP3 항목을 만들 수 없습니다.")
+
+        try {
+            resolver.openOutputStream(audioUri, "w")?.use { output ->
+                sourceFile.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            } ?: throw IllegalStateException("MediaStore MP3 파일을 열 수 없습니다.")
+
+            val completedValues = ContentValues().apply {
+                put(MediaStore.Audio.Media.IS_PENDING, 0)
+                put(MediaStore.Audio.Media.IS_MUSIC, 1)
             }
-            .orEmpty()
+            resolver.update(audioUri, completedValues, null, null)
+            resolver.notifyChange(audioUri, null)
+
+            Log.d("MediaStore", "Published audio: ${sourceFile.name} -> $audioUri")
+            return audioUri
+        } catch (e: Exception) {
+            resolver.delete(audioUri, null, null)
+            throw e
+        }
+    }
+
+    private fun publishLegacyAudio(sourceFile: File, directory: File): File {
+        if (!directory.exists() && !directory.mkdirs()) {
+            throw IllegalStateException("다운로드 폴더를 만들 수 없습니다.")
+        }
+
+        val destination = File(directory, sourceFile.name)
+        sourceFile.copyTo(destination, overwrite = true)
+        return destination
+    }
 
     private suspend fun scanAudioFiles(files: List<File>) {
         if (files.isEmpty()) return
@@ -154,7 +230,7 @@ class MainActivity : AppCompatActivity() {
         suspendCancellableCoroutine { continuation ->
             val remaining = AtomicInteger(files.size)
             val paths = files.map { it.absolutePath }.toTypedArray()
-            val mimeTypes = Array(files.size) { "audio/mpeg" }
+            val mimeTypes = Array(files.size) { AUDIO_MIME_TYPE }
 
             MediaScannerConnection.scanFile(
                 applicationContext,
