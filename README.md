@@ -2,12 +2,10 @@
 
 Based on `kimbaekyu/YoutubeAudioExtractor`.
 
-This fork keeps the original YouTube audio extraction flow and adds an Android media-library refresh after each successful MP3 download so Samsung Music can discover new tracks without rebooting the device.
-
-## Main fix
-
-After yt-dlp finishes, newly created MP3 files are passed to Android's `MediaScannerConnection`. This updates `MediaStore` immediately instead of waiting for the next reboot/storage scan.
+This repository keeps the original Android/yt-dlp MP3 extraction flow and fixes media-library refresh after download. Newly created or replaced MP3 files are registered with Android `MediaStore` through `MediaScannerConnection`, so Samsung Music can discover them without rebooting the phone.
 
 ## Build
 
-Open the project in Android Studio and build the `app` module.
+Open the project in Android Studio, sync Gradle, and build the `app` module.
+
+> The original repository's Gradle wrapper JAR is a binary file and is not copied by this GitHub text-file migration. Android Studio can sync the project directly. If you need CLI builds, run `gradle wrapper` once locally and commit the generated wrapper files.
