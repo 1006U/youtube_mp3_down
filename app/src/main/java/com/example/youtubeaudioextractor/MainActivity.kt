@@ -39,14 +39,17 @@ class MainActivity : AppCompatActivity() {
         private const val AUDIO_MIME_TYPE = "audio/mpeg"
     }
 
+    private lateinit var etYoutubeUrl: EditText
+    private lateinit var tvStatus: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val etYoutubeUrl = findViewById<EditText>(R.id.etYoutubeUrl)
+        etYoutubeUrl = findViewById(R.id.etYoutubeUrl)
         val btnDownload = findViewById<Button>(R.id.btnDownload)
         val progressBar = findViewById<ProgressBar>(R.id.progressBar)
-        val tvStatus = findViewById<TextView>(R.id.tvStatus)
+        tvStatus = findViewById(R.id.tvStatus)
         val btnOpenFolder = findViewById<Button>(R.id.btnOpenFolder)
 
         btnDownload.setOnClickListener {
@@ -157,6 +160,37 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        handleSharedIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleSharedIntent(intent)
+    }
+
+    private fun handleSharedIntent(sharedIntent: Intent?) {
+        if (sharedIntent?.action != Intent.ACTION_SEND || sharedIntent.type != "text/plain") {
+            return
+        }
+
+        val sharedText = sharedIntent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
+        if (sharedText.isBlank()) return
+
+        val youtubeUrl = extractYoutubeUrl(sharedText) ?: return
+        etYoutubeUrl.setText(youtubeUrl)
+        etYoutubeUrl.setSelection(youtubeUrl.length)
+        tvStatus.text = "유튜브에서 공유한 링크를 받았습니다."
+    }
+
+    private fun extractYoutubeUrl(text: String): String? {
+        val youtubeUrlRegex = Regex(
+            """https?://(?:(?:[A-Za-z0-9-]+\.)?youtube\.com/\S+|youtu\.be/\S+)""",
+            RegexOption.IGNORE_CASE
+        )
+
+        return youtubeUrlRegex.find(text)?.value?.trimEnd('.', ',', ')', ']', '}')
     }
 
     /**
